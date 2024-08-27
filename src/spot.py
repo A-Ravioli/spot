@@ -12,15 +12,12 @@ from PIL import Image, ImageTk
 import requests
 from io import BytesIO
 import psutil
-import openai
+from transformers import pipeline  # Import Hugging Face transformers library
 from lucide_py import icons
 
-# init Spotify API
+# Initialize Spotify API
 scope = "user-modify-playback-state"
 sp = spotipy.Spotify(auth_manager=SpotifyOAuth(scope=scope))
-
-# load Whisper for speech recognition
-# whisper_model = load_model("base") #nvm not rn
 
 
 class Spot(tk.Tk):
@@ -56,32 +53,57 @@ class Spot(tk.Tk):
             "repeat_off",
         ]
 
-        openai.api_key = os.getenv("OPENAI_API_KEY")
+        # Initialize Hugging Face classifier
+        self.classifier = pipeline(
+            "zero-shot-classification", model="facebook/bart-large-mnli"
+        )
 
     def classify_action(self, text):
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"You are a voice command classifier for a Spotify control app. Given a user's voice command, classify it into one of the following actions: {', '.join(self.actions)}. Respond with only the action name.",
-                },
-                {"role": "user", "content": text},
-            ],
-        )
-        return response.choices[0].message["content"].strip().lower()
+        # Use Hugging Face model to classify text
+        result = self.classifier(text, self.actions)
+        return result["labels"][
+            0
+        ].lower()  # Return the highest scoring label as the action
 
     def create_ui(self):
-        # Mic button
-        mic_icon = icons.Mic2(size=24, color="gray")
-        self.mic_button = ttk.Button(
-            self, image=mic_icon, command=self.handle_voice_control
+        # Toggle Button for Listening
+        self.toggle_button = ttk.Checkbutton(
+            self, text="Listen", command=self.toggle_listening
         )
-        self.mic_button.grid(row=0, column=0, padx=20, pady=20)
+        self.toggle_button.grid(row=0, column=0, padx=20, pady=20)
 
         # Transcription label
         self.transcription_label = ttk.Label(self, text="")
         self.transcription_label.grid(row=1, column=0, padx=20, pady=10)
+
+    def toggle_listening(self):
+        self.is_listening = not self.is_listening
+        if self.is_listening:
+            self.start_listening()
+        else:
+            self.stop_listening()
+
+    def start_listening(self):
+        # Code to start listening
+        recognizer = sr.Recognizer()
+        mic = sr.Microphone()
+
+        def listen_loop():
+            with mic as source:
+                recognizer.adjust_for_ambient_noise(source)
+                while self.is_listening:
+                    try:
+                        audio = recognizer.listen(source, timeout=5)
+                        self.command_queue.put(audio)
+                    except sr.WaitTimeoutError:
+                        pass  # Continue listening if timeout occurs
+
+        self.listening_thread = threading.Thread(target=listen_loop)
+        self.listening_thread.start()
+
+    def stop_listening(self):
+        # Code to stop listening
+        self.is_listening = False
 
     def execute_action(self, action, text):
         try:
@@ -101,7 +123,6 @@ class Spot(tk.Tk):
                 self.sp.start_playback()
                 self.update_history("Starting playback.")
             elif action == "add_to_playlist":
-                # This would require additional logic to specify which playlist
                 self.update_history("Feature not implemented: Adding to playlist.")
             elif action == "adjust_volume":
                 volume_level = next(
@@ -152,7 +173,11 @@ class Spot(tk.Tk):
 
     def transcribe_and_execute(self, audio):
         try:
-            text = self.whisper_model.transcribe(audio.get_wav_data())["text"].lower()
+            # Save audio to a temporary file for whisper model usage
+            with open("temp_audio.wav", "wb") as f:
+                f.write(audio.get_wav_data())
+
+            text = self.whisper_model.transcribe("temp_audio.wav")["text"].lower()
             self.update_history(f"You said: {text}")
 
             action = self.classify_action(text)
@@ -160,7 +185,7 @@ class Spot(tk.Tk):
         except Exception as e:
             self.update_history(f"An error occurred: {str(e)}")
         finally:
-            self.update_now_playing()
+            self.update_now_playing()  # Ensure this method is defined
 
 
 def is_spotify_running():
@@ -169,7 +194,7 @@ def is_spotify_running():
 
 def run_app():
     app = Spot()
-    app.run()
+    app.mainloop()
 
 
 if __name__ == "__main__":
